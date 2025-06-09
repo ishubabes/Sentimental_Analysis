@@ -1,0 +1,114 @@
+import praw
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+from tabulate import tabulate
+from collections import defaultdict, Counter
+import nltk
+import matplotlib.pyplot as plt
+import numpy as np
+import re
+
+nltk.download('stopwords')
+from nltk.corpus import stopwords
+stop_words = set(stopwords.words("english"))
+
+EXTRA_STOPWORDS = {
+    "can", "has", "like", "is", "will", "just", "get", "got", "one", "make", "even",
+    "really", "think", "know", "also", "thing", "said", "could", "would", "should",
+    "much", "many", "say", "still", "every", "see", "without", "way"
+}
+
+def get_reddit_instance():
+    return praw.Reddit(
+        client_id="YikveMDwiCaFrzkZhtpIGA",
+        client_secret="_e4_Se_bwKfaNAT1YQKHNCUEzBwN4g",
+        user_agent="sentiment_analysis_bot"
+    )
+
+def clean_text(text):
+    return re.sub(r'[^a-zA-Z\s]', '', text).lower()
+
+def extract_keywords_from_titles(posts, top_n=5):
+    all_words = []
+    for post in posts:
+        words = clean_text(post['title']).split()
+        words = [w for w in words if w not in stop_words and w not in EXTRA_STOPWORDS and len(w) > 3]
+        all_words.extend(words)
+    common_words = [word for word, _ in Counter(all_words).most_common(top_n)]
+    return common_words
+
+def categorize_posts(posts, keywords):
+    topic_sentiments = defaultdict(list)
+    for post in posts:
+        combined_text = post['title'] + ' ' + post.get('selftext', '')
+        for kw in keywords:
+            if kw in combined_text.lower():
+                topic_sentiments[kw].append(post['score'])
+    topic_avg = {kw: round(sum(scores)/len(scores), 3) if scores else 0 for kw, scores in topic_sentiments.items()}
+    return topic_avg
+
+def plot_spider_chart(data, subreddit):
+    categories = list(data.keys())
+    values = list(data.values())
+    N = len(categories)
+    values += values[:1]
+    angles = [n / float(N) * 2 * np.pi for n in range(N)]
+    angles += angles[:1]
+    plt.figure(figsize=(6, 6))
+    ax = plt.subplot(111, polar=True)
+    plt.xticks(angles[:-1], categories)
+    ax.plot(angles, values, linewidth=2, linestyle='solid')
+    ax.fill(angles, values, 'skyblue', alpha=0.4)
+    plt.title(f"Avg Sentiment by Topic in r/{subreddit}", size=14)
+    plt.show()
+
+def analyze_subreddit(subreddit_name, post_limit=100):
+    reddit = get_reddit_instance()
+    analyzer = SentimentIntensityAnalyzer()
+    subreddit = reddit.subreddit(subreddit_name)
+    posts = []
+    for post in subreddit.hot(limit=post_limit):
+        if post.stickied:
+            continue
+        score = analyzer.polarity_scores(post.title + ' ' + (post.selftext or ''))
+        compound = score['compound']
+        posts.append({
+            'title': post.title,
+            'selftext': post.selftext,
+            'score': compound,
+            'url': post.url,
+            'permalink': "https://reddit.com" + post.permalink
+        })
+    return posts
+
+def get_top_posts(posts):
+    positive = sorted([p for p in posts if p['score'] > 0.2], key=lambda x: -x['score'])[:5]
+    negative = sorted([p for p in posts if p['score'] < -0.2], key=lambda x: x['score'])[:5]
+    return positive, negative
+
+def print_posts(title, posts):
+    print(f"\n{title}")
+    table = [[i+1, p['title'][:60], p['score'], p['permalink']] for i, p in enumerate(posts)]
+    print(tabulate(table, headers=["#", "Title", "Sentiment Score", "Link"], tablefmt="fancy_grid"))
+
+def main():
+    url = input("Enter subreddit URL (e.g. https://www.reddit.com/r/technology): ").strip()
+    if not url.startswith("https://www.reddit.com/r/"):
+        print("Invalid subreddit URL.")
+        return
+    subreddit_name = url.split("/r/")[1].split("/")[0]
+    posts = analyze_subreddit(subreddit_name)
+    if not posts:
+        print("No posts found.")
+        return
+    positive, negative = get_top_posts(posts)
+    print_posts("🔥 Top 5 Positive Posts", positive)
+    print_posts("❌ Top 5 Negative Posts", negative)
+    
+    keywords = extract_keywords_from_titles(positive, top_n=5)
+    print(f"\n📌 Major words from top 5 positive post headlines: {', '.join(keywords)}")
+    
+    topic_scores = categorize_posts(posts, keywords)
+    plot_spider_chart(topic_scores, subreddit_name)
+
+if __name__ == "__main__":
+    main()
